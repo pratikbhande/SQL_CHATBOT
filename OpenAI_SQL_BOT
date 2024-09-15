@@ -1,0 +1,154 @@
+import os
+import re
+import pyodbc
+import pandas as pd
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
+
+# Replace these variables with your actual database connection details
+server = 'credentials'  # Replace with your server name
+database = 'credentials'  # Replace with your database name
+username = 'credentials'  # Replace with your username
+password = 'credentials'  # Replace with your password
+driver = 'credentials'  # Ensure this driver is installed
+
+# Construct the connection string
+connection_string = f'DRIVER={driver};SERVER={server};PORT=1433;DATABASE={database};UID={username};PWD={password}'
+
+# Set your OpenAI API key
+os.environ["OPENAI_API_KEY"] = "credentials"
+
+# Initialize the chat model
+llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+
+def get_user_input():
+    # Function to get the user's input
+    return input("Please enter your query: ")
+
+def create_message(user_query):
+    # Function to create the messages list
+    messages = [
+        SystemMessage(
+            content="""
+            You are a SQL query generator which takes query from the user and answers accordingly.
+            Use the views ro.vw_rpt_FactTicketSales.
+            
+            "ADD COLUMNS OF YOUR SQL DATABASE"
+            
+            
+            Provide an accurate SQL query based on the user's request.
+            If the user asks for data from multiple views, generate separate SQL queries for each view. The response should include all the necessary SQL queries, and nothing else—just the SQL queries. 
+            Instead of LIMIT use TOP for SQL query.
+            If user asked for "year on year" change or distribution use LEAD function in sql query to show change over year.
+            Ignore Graph word from user query just focus on query to be formed from user input.
+            If user provide more than one view and if its asking for comparison such as count, difference or sum provide accurate answer for multiple views together as well.
+            If asked for distribution,distributed or comparison graphs if number is not specified  then give top 5 results as output by default.
+            Provide accurate query.
+            
+            
+            
+            """
+        ),
+        HumanMessage(
+            content=user_query
+        )
+    ]
+    return messages
+
+def extract_sql_queries(response_text):
+    # Use regex to find all SQL queries in the response
+    matches = re.findall(r"SELECT.*?;", response_text, re.IGNORECASE | re.DOTALL)
+    return matches if matches else None
+
+def generate_python_script(df: pd.DataFrame):
+    df_str = df.to_string(index=False)
+    messages = [
+        SystemMessage(
+            content="""
+            You are a Python code generator which generates python graph codes for plotting bar chart , piechart , histogram , stacked bar graph etc. Given a DataFrame output, generate a Python script that can be used to create a graph based on the data using pandas , matplotlib or seaborn whichever suitable.
+            Plot various types of graph such as piechart , barchart. Which ever suitable or user mentioned strictly. Use color gradient instead of plain colors.
+            Plot graph which user has mentioned not only bar graph but also plot pie chart and histograms too. So generate code as per users query or requirements.
+            
+            """
+        ),
+        HumanMessage(
+            content=f"Here is the DataFrame:\n{df_str}\n\nPlease generate a Python script to plot a graph based on this data."
+        )
+    ]
+    response = llm.invoke(messages).content.strip()
+    return response
+
+def extract_python_script(response_text):
+    # Use regex to find the Python script in the response
+    match = re.search(r"python(.*?)", response_text, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+    else:
+        return None
+
+def main():
+    # Initialize cursor as None
+    cursor = None
+    conn = None
+    
+    # Get the user query
+    user_query = get_user_input()
+    
+    # Create the message list
+    messages = create_message(user_query)
+    
+    # Invoke the LLM to generate the SQL query
+    response = llm.invoke(messages).content.strip()
+    
+    # Extract all SQL queries from the response using regex
+    sql_queries = extract_sql_queries(response)
+    
+    if sql_queries:
+        for sql_query in sql_queries:
+            # Print the extracted SQL query
+            print("Extracted SQL Query:")
+            print(sql_query)
+            
+            # Connect to the database
+            try:
+                conn = pyodbc.connect(connection_string)
+                cursor = conn.cursor()
+                print("Connection successful!")
+
+                # Execute the extracted SQL query
+                cursor.execute(sql_query)
+                result = cursor.fetchall()
+
+                # Convert the result to a DataFrame
+                columns = [column[0] for column in cursor.description]
+                df = pd.DataFrame.from_records(result, columns=columns)
+
+                # Print the DataFrame
+                print("\nQuery Results in DataFrame:")
+                print(df)
+
+                # Generate Python script to create a graph
+                python_script = generate_python_script(df)
+                print("\nGenerated Python Script:")
+                print(python_script)
+
+                # Extract the Python script
+                extracted_script = extract_python_script(python_script)
+                if extracted_script:
+                    # Execute the extracted Python script
+                    exec(extracted_script)
+
+            except Exception as e:
+                print(f"Error: {e}")
+
+            finally:
+                # Close the cursor and connection if they exist
+                if cursor:
+                    cursor.close()
+                if conn:
+                    conn.close()
+    else:
+        print("No valid SQL queries were found in the response.")
+
+if _name_ == "_main_":
+    main()
